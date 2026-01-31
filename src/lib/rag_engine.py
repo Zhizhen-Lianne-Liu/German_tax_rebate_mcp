@@ -1,96 +1,175 @@
 """
 Local RAG engine for German tax law queries.
-Uses ChromaDB + sentence-transformers (fully local).
+Uses PostgreSQL + pgvector + Gemini API embeddings.
 """
 
-import chromadb
-from sentence_transformers import SentenceTransformer
+import psycopg2
+from psycopg2.extras import execute_values
+from pgvector.psycopg2 import register_vector
+import google.generativeai as genai
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict
 import sys
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
 sys.path.append(str(Path(__file__).parent.parent))
-from config import VECTOR_DB_DIR, RAGConfig
+from config import RAGConfig
+
+# Database connection settings
+DB_CONFIG = {
+    'host': 'localhost',
+    'port': 5432,
+    'database': 'german_tax',
+    'user': 'tax_user',
+    'password': 'tax_password_local_only'
+}
 
 
 class TaxRAG:
-    """Local vector database for German tax law"""
+    """Local vector database for German tax law using pgvector + Gemini embeddings"""
 
     def __init__(self):
-        """Initialize ChromaDB client and embedding model"""
-        self.client = chromadb.PersistentClient(path=str(VECTOR_DB_DIR))
+        """Initialize PostgreSQL connection and Gemini API"""
+        # Configure Gemini API
+        api_key = os.getenv('GEMINI_API_KEY')
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY not found in environment variables. Please add it to .env file")
 
-        # Load local embedding model (runs on CPU, no API needed)
-        print(f"Loading embedding model: {RAGConfig.EMBEDDING_MODEL}")
-        self.embedder = SentenceTransformer(RAGConfig.EMBEDDING_MODEL)
+        genai.configure(api_key=api_key)
+        print(f"✅ Gemini API configured (embedding-001, 768 dimensions)")
 
-        # Get or create collections
-        self.collections = {
-            'tax_law': self.client.get_or_create_collection(
-                name="tax_law",
-                metadata={"description": "German tax code (EStG, AO)"}
-            ),
-            'forms': self.client.get_or_create_collection(
-                name="forms",
-                metadata={"description": "ELSTER form instructions"}
-            ),
-            'deductions': self.client.get_or_create_collection(
-                name="deductions",
-                metadata={"description": "Deduction rules and examples"}
-            )
-        }
+        self.embedding_dim = 768  # Gemini embedding-001 dimension
+
+        # Connect to PostgreSQL
+        self.conn = psycopg2.connect(**DB_CONFIG)
+        self.cursor = self.conn.cursor()
+
+        # Enable pgvector extension FIRST
+        self.cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        self.conn.commit()
+
+        # Now register vector type with psycopg2
+        register_vector(self.conn)
+
+        # Create tables if not exist
+        self._init_tables()
+
+    def _init_tables(self):
+        """Create vector tables for each collection"""
+        collections = ['tax_law', 'forms', 'deductions']
+
+        for collection in collections:
+            # Drop old full-text search table if exists
+            self.cursor.execute(f"""
+                DROP TABLE IF EXISTS {collection} CASCADE
+            """)
+
+            # Create new vector table
+            self.cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS {collection} (
+                    id SERIAL PRIMARY KEY,
+                    title TEXT,
+                    text TEXT NOT NULL,
+                    url TEXT,
+                    section TEXT,
+                    embedding vector({self.embedding_dim}),
+                    metadata JSONB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Create index for fast vector search
+            self.cursor.execute(f"""
+                CREATE INDEX IF NOT EXISTS {collection}_embedding_idx
+                ON {collection} USING ivfflat (embedding vector_cosine_ops)
+                WITH (lists = 100)
+            """)
+
+        self.conn.commit()
+        print("✅ pgvector tables created")
+
+    def _text_to_embedding(self, text: str) -> List[float]:
+        """Convert text to embedding using Gemini API"""
+        result = genai.embed_content(
+            model="models/embedding-001",
+            content=text,
+            task_type="retrieval_document"
+        )
+        return result['embedding']
+
+    def _query_to_embedding(self, query: str) -> List[float]:
+        """Convert query to embedding using Gemini API"""
+        result = genai.embed_content(
+            model="models/embedding-001",
+            content=query,
+            task_type="retrieval_query"
+        )
+        return result['embedding']
 
     def query(self, question: str, collection: str = 'deductions', n_results: int = 3) -> dict:
         """
         Query the RAG database with a natural language question.
 
         Args:
-            question: Natural language query (e.g., "Can I deduct internet costs for home office?")
+            question: Natural language query
             collection: Which collection to search ('tax_law', 'forms', 'deductions')
             n_results: Number of results to return
 
         Returns:
             Dictionary with answer, sources, and confidence
         """
-        if collection not in self.collections:
+        if collection not in ['tax_law', 'forms', 'deductions']:
             return {
                 "answer": f"Unknown collection: {collection}",
                 "sources": [],
                 "confidence": 0.0
             }
 
-        # Generate embedding for question
-        query_embedding = self.embedder.encode([question]).tolist()
+        # Generate embedding for question using Gemini
+        query_embedding = self._query_to_embedding(question)
 
-        # Search vector database
-        results = self.collections[collection].query(
-            query_embeddings=query_embedding,
-            n_results=n_results
-        )
+        # Search vector database using cosine similarity
+        self.cursor.execute(f"""
+            SELECT title, text, url, section, metadata, 1 - (embedding <=> %s::vector) as similarity
+            FROM {collection}
+            WHERE embedding IS NOT NULL
+            ORDER BY embedding <=> %s::vector
+            LIMIT %s
+        """, (query_embedding, query_embedding, n_results))
 
-        # Format results
-        if not results['documents'] or not results['documents'][0]:
+        results = self.cursor.fetchall()
+
+        if not results:
             return {
                 "answer": "No relevant information found. This might be a rare tax scenario.",
                 "sources": [],
                 "confidence": 0.0
             }
 
-        # Combine top results into answer
+        # Format results
         sources = []
-        for i, (doc, metadata, distance) in enumerate(zip(
-            results['documents'][0],
-            results['metadatas'][0],
-            results['distances'][0]
-        )):
+        for title, text, url, section, metadata, similarity in results:
+            if metadata is None:
+                metadata = {}
+
+            # Extract snippet
+            snippet = text[:300] + "..." if len(text) > 300 else text
+
             sources.append({
-                "text": doc,
-                "source": metadata.get('source', 'Unknown'),
-                "section": metadata.get('section', ''),
-                "confidence": 1 - distance  # Convert distance to similarity score
+                "text": snippet,
+                "title": title if title else "Unknown",
+                "section": section if section else "",
+                "source": metadata.get('source', 'Unknown') if isinstance(metadata, dict) else 'Unknown',
+                "url": url if url else "",
+                "confidence": float(similarity) if similarity else 0.0
             })
 
         # Best answer is the top result
-        answer = sources[0]['text'] if sources else "No information found"
+        answer = results[0][1] if results else "No information found"
         avg_confidence = sum(s['confidence'] for s in sources) / len(sources) if sources else 0.0
 
         return {
@@ -105,25 +184,44 @@ class TaxRAG:
 
         Args:
             text: Document text to embed
-            metadata: Metadata (source, section, year, etc.)
+            metadata: Metadata (source, section, url, etc.)
             collection: Which collection to add to
         """
-        import uuid
+        # Generate embedding using Gemini
+        embedding = self._text_to_embedding(text)
 
-        # Generate embedding
-        embedding = self.embedder.encode([text]).tolist()
+        # Extract fields from metadata
+        title = metadata.get('title', '')
+        url = metadata.get('url', '')
+        section = metadata.get('section', '')
 
-        # Add to collection
-        self.collections[collection].add(
-            embeddings=embedding,
-            documents=[text],
-            metadatas=[metadata],
-            ids=[str(uuid.uuid4())]
-        )
+        # Add to database
+        self.cursor.execute(f"""
+            INSERT INTO {collection} (title, text, url, section, embedding, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (title, text, url, section, embedding, psycopg2.extras.Json(metadata)))
+
+        self.conn.commit()
 
     def get_collection_count(self, collection: str = 'deductions') -> int:
         """Get number of documents in a collection"""
-        return self.collections[collection].count()
+        try:
+            self.cursor.execute(f"SELECT COUNT(*) FROM {collection}")
+            return self.cursor.fetchone()[0]
+        except:
+            return 0
+
+    def clear_collection(self, collection: str):
+        """Clear all documents from a collection"""
+        self.cursor.execute(f"DELETE FROM {collection}")
+        self.conn.commit()
+
+    def __del__(self):
+        """Close database connection on cleanup"""
+        if hasattr(self, 'cursor'):
+            self.cursor.close()
+        if hasattr(self, 'conn'):
+            self.conn.close()
 
 
 # Global instance (lazy loaded)

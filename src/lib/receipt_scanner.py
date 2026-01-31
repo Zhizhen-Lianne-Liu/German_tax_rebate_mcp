@@ -111,20 +111,22 @@ def extract_date(text: str) -> Optional[datetime]:
 
 def extract_amount(text: str) -> Optional[float]:
     """Extract total amount from German receipt text"""
-    # Look for keywords indicating total
+    # Look for lines that start with total keywords (after optional whitespace)
+    # This avoids matching compound words like "Material gesamt"
+    # Allow optional EUR/€ symbol between keyword and amount
     total_keywords = [
-        r'Summe.*?(\d+[.,]\d{2})',
-        r'Total.*?(\d+[.,]\d{2})',
-        r'Gesamt.*?(\d+[.,]\d{2})',
-        r'Betrag.*?(\d+[.,]\d{2})',
-        r'EUR.*?(\d+[.,]\d{2})',
-        r'€.*?(\d+[.,]\d{2})',
+        r'^\s*Gesamt:?\s*(?:EUR|€)?\s*(\d+[.,]\d{2})',  # Total with tax (most important)
+        r'^\s*Total:?\s*(?:EUR|€)?\s*(\d+[.,]\d{2})',
+        r'^\s*Summe:?\s*(?:EUR|€)?\s*(\d+[.,]\d{2})',   # Subtotal (less important)
+        r'^\s*Betrag:?\s*(?:EUR|€)?\s*(\d+[.,]\d{2})',
     ]
 
     for pattern in total_keywords:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            amount_str = match.group(1).replace(',', '.')
+        # Use findall to get ALL matches, then take the last one (final total)
+        matches = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
+        if matches:
+            # Take the last match (typically the final total)
+            amount_str = matches[-1].replace(',', '.')
             try:
                 return float(amount_str)
             except ValueError:
@@ -224,6 +226,68 @@ def scan_receipt_image(file_path: str) -> ScannedReceipt:
         )
 
 
+def scan_receipt_text(file_path: str) -> ScannedReceipt:
+    """
+    Scan a plain text receipt file.
+
+    Args:
+        file_path: Path to text receipt file (.txt)
+
+    Returns:
+        ScannedReceipt with extracted data
+    """
+    path = Path(file_path)
+
+    if not path.exists():
+        return ScannedReceipt(
+            file_path=file_path,
+            category='other',
+            confidence=0.0,
+            ocr_text=f"File not found: {file_path}"
+        )
+
+    try:
+        # Read text file
+        text = path.read_text(encoding='utf-8')
+
+        # Extract data using existing functions
+        receipt_date = extract_date(text)
+        amount = extract_amount(text)
+        merchant = extract_merchant(text)
+
+        # Auto-categorize
+        category = 'other'
+        if merchant:
+            category = categorize_by_merchant(merchant)
+
+        # Confidence based on what we found
+        confidence = 0.0
+        if receipt_date:
+            confidence += 0.3
+        if amount:
+            confidence += 0.4
+        if merchant:
+            confidence += 0.3
+
+        return ScannedReceipt(
+            file_path=file_path,
+            date=receipt_date.date() if receipt_date else None,
+            merchant=merchant,
+            amount=amount,
+            category=category,
+            confidence=round(confidence, 2),
+            ocr_text=text
+        )
+
+    except Exception as e:
+        return ScannedReceipt(
+            file_path=file_path,
+            category='other',
+            confidence=0.0,
+            ocr_text=f"Text file processing failed: {str(e)}"
+        )
+
+
 def scan_receipt_pdf(file_path: str) -> ScannedReceipt:
     """
     Scan a PDF receipt.
@@ -313,6 +377,8 @@ def scan_receipt(file_path: str) -> ScannedReceipt:
         return scan_receipt_pdf(file_path)
     elif suffix in ['.jpg', '.jpeg', '.png']:
         return scan_receipt_image(file_path)
+    elif suffix == '.txt':
+        return scan_receipt_text(file_path)
     else:
         return ScannedReceipt(
             file_path=file_path,
@@ -340,7 +406,7 @@ def scan_folder(folder_path: str) -> list[ScannedReceipt]:
     receipts = []
 
     # Supported formats
-    patterns = ['*.pdf', '*.jpg', '*.jpeg', '*.png', '*.PDF', '*.JPG', '*.JPEG', '*.PNG']
+    patterns = ['*.pdf', '*.jpg', '*.jpeg', '*.png', '*.txt', '*.PDF', '*.JPG', '*.JPEG', '*.PNG', '*.TXT']
 
     for pattern in patterns:
         for file in folder.rglob(pattern):

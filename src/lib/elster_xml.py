@@ -55,6 +55,25 @@ def generate_elster_xml(
 
     # Year and basic info
     etree.SubElement(main_form, "Jahr").text = str(tax_year)
+
+    # Personal identification (NEW - Taxfix parity)
+    personal = etree.SubElement(main_form, "Persoenliche_Angaben")
+    etree.SubElement(personal, "Vorname").text = questions.first_name
+    etree.SubElement(personal, "Nachname").text = questions.last_name
+    etree.SubElement(personal, "Geburtsdatum").text = questions.birthdate.strftime('%d.%m.%Y')
+    etree.SubElement(personal, "Steueridentifikationsnummer").text = questions.steuer_id
+
+    # Address
+    address = etree.SubElement(personal, "Adresse")
+    etree.SubElement(address, "Strasse").text = questions.home_address
+    etree.SubElement(address, "PLZ").text = questions.postal_code
+
+    # Contact (NEW)
+    etree.SubElement(personal, "Email").text = questions.email
+    if questions.phone:
+        etree.SubElement(personal, "Telefon").text = questions.phone
+
+    # Tax class
     etree.SubElement(main_form, "Steuerklasse").text = questions.tax_class
 
     # Marital status
@@ -66,6 +85,25 @@ def generate_elster_xml(
         etree.SubElement(main_form, "Familienstand").text = "3"
     elif questions.marital_status == 'widowed':
         etree.SubElement(main_form, "Familienstand").text = "4"
+
+    # Religion (NEW - Lines 11, 23)
+    if questions.religion:
+        religion_code = {
+            'rk': 'RK',  # Roman Catholic
+            'ev': 'EV',  # Evangelical
+            'none': 'OK',  # Ohne Konfession
+            'other': 'SO'  # Sonstige
+        }.get(questions.religion, 'OK')
+        etree.SubElement(main_form, "Religionsgemeinschaft").text = religion_code
+
+    # Bank details (NEW - for refunds)
+    bank = etree.SubElement(main_form, "Bankverbindung")
+    etree.SubElement(bank, "IBAN").text = questions.iban
+    etree.SubElement(bank, "Kontoinhaber").text = f"{questions.first_name} {questions.last_name}"
+
+    # Tax advisor (NEW - Line 39)
+    if questions.tax_advisor_prepared:
+        etree.SubElement(main_form, "Steuerberater").text = "true"
 
     # Income (from Lohnsteuerbescheinigung)
     etree.SubElement(main_form, "Bruttolohn").text = f"{questions.gross_income:.2f}"
@@ -85,6 +123,14 @@ def generate_elster_xml(
 
     # Anlage N (Employment income)
     anlage_n = etree.SubElement(payload, "Anlage_N")
+
+    # Employer information (NEW - if provided)
+    if questions.employer_name:
+        etree.SubElement(anlage_n, "Arbeitgeber").text = questions.employer_name
+    if questions.employment_start_date:
+        etree.SubElement(anlage_n, "Beschaeftigungsbeginn").text = questions.employment_start_date.strftime('%d.%m.%Y')
+    if questions.employment_end_date:
+        etree.SubElement(anlage_n, "Beschaeftigungsende").text = questions.employment_end_date.strftime('%d.%m.%Y')
 
     # Commuting deduction (Entfernungspauschale)
     if deductions.commuting_deduction > 0:
@@ -155,13 +201,22 @@ def generate_summary_text(
 ║          German Tax Return Summary - {tax_year}              ║
 ╚══════════════════════════════════════════════════════════════╝
 
-📋 PERSONAL INFORMATION
+👤 PERSONAL INFORMATION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Name:             {questions.first_name} {questions.last_name}
+  Birthdate:        {questions.birthdate.strftime('%d.%m.%Y')}
   Tax ID:           {questions.steuer_id}
+  Email:            {questions.email}
+  Address:          {questions.home_address}
+  Postal Code:      {questions.postal_code}
+  IBAN:             {questions.iban[:8]}...{questions.iban[-4:]}
+
+🏢 TAX STATUS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Marital Status:   {questions.marital_status.capitalize()}
   Tax Class:        {questions.tax_class}
   Children:         {questions.num_children}
-  Postal Code:      {questions.postal_code}
+  Employer:         {questions.employer_name or 'Not specified'}
 
 💰 INCOME
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

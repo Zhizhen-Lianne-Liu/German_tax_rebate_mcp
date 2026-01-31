@@ -12,6 +12,7 @@ dist/
 *.egg-info/
 
 # User data (sensitive!)
+data/session.json
 data/profiles/*.json
 !data/profiles/.gitkeep
 data/receipts/**/*

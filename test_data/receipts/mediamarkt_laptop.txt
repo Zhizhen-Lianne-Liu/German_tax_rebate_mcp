@@ -1,0 +1,22 @@
+MediaMarkt
+Alexanderplatz, Berlin
+
+Kassenbon
+
+Datum: 12.07.2025
+Zeit: 14:23
+Bon-Nr: MM-2025-789456
+
+Lenovo ThinkPad E15
+Business Laptop
+15.6" Display, Intel i5
+16GB RAM, 512GB SSD
+
+Artikel-Nr: 789456123
+
+Betrag:                   899.00 EUR
+MwSt (19%):              143.14 EUR
+Gesamt:                  899.00 EUR
+
+Bezahlt: EC-Karte
+Vielen Dank für Ihren Einkauf!

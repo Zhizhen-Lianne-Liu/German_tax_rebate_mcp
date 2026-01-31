@@ -1,0 +1,29 @@
+Müller Elektriker Meisterbetrieb
+Handwerkerleistungen
+Berliner Str. 88, 10713 Berlin
+
+Rechnung Nr: ME-2025-0234
+
+Datum: 18.06.2025
+Kunde: Max Mustermann
+Objekt: Musterweg 10, 10115 Berlin
+
+Ausgeführte Arbeiten:
+Reparatur defekter Steckdosen
+Installation neue Außenbeleuchtung
+
+Arbeitszeit: 3.5 Stunden
+Stundensatz: 65.00 EUR
+
+Arbeitskosten:            227.50 EUR
+Material (Steckdosen):     45.00 EUR
+Material (Lampen):         80.00 EUR
+--------------------------------
+Arbeitslohn:              227.50 EUR
+Material gesamt:          125.00 EUR
+Summe:                    352.50 EUR
+MwSt (19%):                66.98 EUR
+Gesamt:                   419.48 EUR
+
+Bezahlung per Banküberweisung erhalten
+Vielen Dank!

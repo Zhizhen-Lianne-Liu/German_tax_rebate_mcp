@@ -1,0 +1,24 @@
+Sauber Clean Service GmbH
+Reinigungsdienste
+Musterstraße 123, 10115 Berlin
+
+Rechnung Nr: SC-2025-156
+
+Datum: 22.05.2025
+
+Haushaltsreinigung
+Wohnung: Musterstraße 45, Berlin
+
+Leistung: Haushaltsnahe Dienstleistung
+Arbeitszeit: 4 Stunden
+Stundensatz: 25.00 EUR
+
+Arbeitskosten:            100.00 EUR
+Materialkosten:            10.00 EUR
+--------------------------------
+Summe:                    110.00 EUR
+MwSt (19%):                20.90 EUR
+Gesamt:                   130.90 EUR
+
+Bezahlt per Überweisung
+Vielen Dank!
