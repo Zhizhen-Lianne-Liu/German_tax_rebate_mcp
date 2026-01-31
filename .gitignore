@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# User data (sensitive!)
+data/profiles/*.json
+!data/profiles/.gitkeep
+data/receipts/**/*
+!data/receipts/.gitkeep
+data/documents/**/*
+!data/documents/.gitkeep
+data/exports/**/*
+!data/exports/.gitkeep
+data/vector_db/**/*
+!data/vector_db/.gitkeep
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
