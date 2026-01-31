@@ -6,12 +6,14 @@ Uses PostgreSQL + pgvector + Gemini API embeddings.
 import psycopg2
 from psycopg2.extras import execute_values
 from pgvector.psycopg2 import register_vector
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from pathlib import Path
 from typing import Optional, List, Dict
 import sys
 import os
 from dotenv import load_dotenv
+import numpy as np
 
 # Load environment variables
 load_dotenv()
@@ -34,15 +36,15 @@ class TaxRAG:
 
     def __init__(self):
         """Initialize PostgreSQL connection and Gemini API"""
-        # Configure Gemini API
+        # Configure Gemini API (new google-genai SDK)
         api_key = os.getenv('GEMINI_API_KEY')
         if not api_key:
             raise ValueError("GEMINI_API_KEY not found in environment variables. Please add it to .env file")
 
-        genai.configure(api_key=api_key)
-        print(f"✅ Gemini API configured (embedding-001, 768 dimensions)")
+        self.genai_client = genai.Client(api_key=api_key)
+        print(f"✅ Gemini API configured (gemini-embedding-001, truncated to 700 dimensions)")
 
-        self.embedding_dim = 768  # Gemini embedding-001 dimension
+        self.embedding_dim = 700  # Truncated from 3072 to fit pgvector index limits
 
         # Connect to PostgreSQL
         self.conn = psycopg2.connect(**DB_CONFIG)
@@ -63,12 +65,31 @@ class TaxRAG:
         collections = ['tax_law', 'forms', 'deductions']
 
         for collection in collections:
-            # Drop old full-text search table if exists
+            # Check if table exists and has correct schema
             self.cursor.execute(f"""
-                DROP TABLE IF EXISTS {collection} CASCADE
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_name = '{collection}' AND column_name = 'embedding'
             """)
+            result = self.cursor.fetchone()
 
-            # Create new vector table
+            # Only drop if table exists but doesn't have vector embedding column
+            if result is None:
+                # Check if table exists at all
+                self.cursor.execute(f"""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables
+                        WHERE table_name = '{collection}'
+                    )
+                """)
+                table_exists = self.cursor.fetchone()[0]
+
+                if table_exists:
+                    # Old table format (full-text search), drop it
+                    print(f"  Dropping old {collection} table (wrong schema)")
+                    self.cursor.execute(f"DROP TABLE IF EXISTS {collection} CASCADE")
+
+            # Create new vector table (IF NOT EXISTS handles existing tables)
             self.cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS {collection} (
                     id SERIAL PRIMARY KEY,
@@ -82,33 +103,35 @@ class TaxRAG:
                 )
             """)
 
-            # Create index for fast vector search
+            # Create HNSW index for fast vector search (supports up to 16000 dimensions)
             self.cursor.execute(f"""
                 CREATE INDEX IF NOT EXISTS {collection}_embedding_idx
-                ON {collection} USING ivfflat (embedding vector_cosine_ops)
-                WITH (lists = 100)
+                ON {collection} USING hnsw (embedding vector_cosine_ops)
+                WITH (m = 16, ef_construction = 64)
             """)
 
         self.conn.commit()
         print("✅ pgvector tables created")
 
     def _text_to_embedding(self, text: str) -> List[float]:
-        """Convert text to embedding using Gemini API"""
-        result = genai.embed_content(
-            model="models/embedding-001",
-            content=text,
-            task_type="retrieval_document"
+        """Convert text to embedding using Gemini API (new google-genai SDK)"""
+        result = self.genai_client.models.embed_content(
+            model="gemini-embedding-001",
+            contents=text,
+            config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT")
         )
-        return result['embedding']
+        # Truncate to 700 dimensions to fit pgvector index limits
+        return list(result.embeddings[0].values)[:self.embedding_dim]
 
     def _query_to_embedding(self, query: str) -> List[float]:
-        """Convert query to embedding using Gemini API"""
-        result = genai.embed_content(
-            model="models/embedding-001",
-            content=query,
-            task_type="retrieval_query"
+        """Convert query to embedding using Gemini API (new google-genai SDK)"""
+        result = self.genai_client.models.embed_content(
+            model="gemini-embedding-001",
+            contents=query,
+            config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY")
         )
-        return result['embedding']
+        # Truncate to 700 dimensions to fit pgvector index limits
+        return list(result.embeddings[0].values)[:self.embedding_dim]
 
     def query(self, question: str, collection: str = 'deductions', n_results: int = 3) -> dict:
         """
@@ -132,14 +155,17 @@ class TaxRAG:
         # Generate embedding for question using Gemini
         query_embedding = self._query_to_embedding(question)
 
+        # Convert to numpy array for pgvector compatibility
+        query_np = np.array(query_embedding, dtype=np.float32)
+
         # Search vector database using cosine similarity
         self.cursor.execute(f"""
-            SELECT title, text, url, section, metadata, 1 - (embedding <=> %s::vector) as similarity
+            SELECT title, text, url, section, metadata, 1 - (embedding <=> %s) as similarity
             FROM {collection}
             WHERE embedding IS NOT NULL
-            ORDER BY embedding <=> %s::vector
+            ORDER BY embedding <=> %s
             LIMIT %s
-        """, (query_embedding, query_embedding, n_results))
+        """, (query_np, query_np, n_results))
 
         results = self.cursor.fetchall()
 

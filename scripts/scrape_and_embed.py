@@ -110,6 +110,7 @@ def main():
 
                 # Generate embedding and store
                 metadata = {
+                    'title': doc.get('title', 'Unknown'),
                     'source': doc.get('source', 'Unknown'),
                     'section': doc.get('section', ''),
                     'url': doc.get('url', '')
