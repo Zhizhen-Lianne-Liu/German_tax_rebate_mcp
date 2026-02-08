@@ -13,8 +13,12 @@ setup:
     uv sync
     @echo "   ✅ Dependencies installed"
     @echo ""
-    @echo "2. Populating knowledge base (RAG)..."
-    uv run python scripts/ingest_knowledge_base.py
+    @echo "2. Starting PostgreSQL (if not running)..."
+    docker-compose up -d
+    @echo "   ✅ Database ready"
+    @echo ""
+    @echo "3. Scraping and embedding German tax sources..."
+    uv run python scripts/scrape_and_embed.py
     @echo ""
     @echo "✅ Setup complete! Run 'just test' to verify."
 
@@ -23,25 +27,38 @@ sync:
     @echo "📦 Syncing environment with uv..."
     uv sync
 
+# Start PostgreSQL database
+db-start:
+    @echo "🐘 Starting PostgreSQL + pgvector..."
+    docker-compose up -d
+    @echo "   ✅ Database running on localhost:5432"
+
+# Stop PostgreSQL database
+db-stop:
+    @echo "🐘 Stopping PostgreSQL..."
+    docker-compose down
+
 # Run the MCP server
 run:
     @echo "🚀 Starting German Tax MCP Server..."
     uv run python src/server.py
 
-# Populate/refresh the knowledge base
+# Populate/refresh the knowledge base (scrape + embed)
 ingest:
-    @echo "📚 Ingesting knowledge base..."
-    uv run python scripts/ingest_knowledge_base.py
+    @echo "📚 Scraping and embedding German tax sources..."
+    @echo "   This will take ~2 minutes (Gemini API rate limits)"
+    uv run python scripts/scrape_and_embed.py
 
-# Force re-ingest (clear and rebuild)
+# Clear database and rebuild from scratch
 ingest-force:
-    @echo "📚 Force re-ingesting knowledge base..."
-    uv run python scripts/ingest_knowledge_base.py --force
+    @echo "📚 Clearing database and re-ingesting..."
+    docker exec german_tax_postgres psql -U tax_user -d german_tax -c "TRUNCATE TABLE deductions, tax_law, forms;" || true
+    uv run python scripts/scrape_and_embed.py
 
 # Test RAG system
 test-rag:
     @echo "🧪 Testing RAG system..."
-    @uv run python -c "from src.lib.rag_engine import get_rag; rag = get_rag(); result = rag.query('Can I deduct home office internet costs?'); print(f'\nAnswer: {result[\"answer\"][:200]}...\nConfidence: {result[\"confidence\"]}')"
+    @uv run python -c "import sys; sys.path.append('src'); from lib.rag_engine import get_rag; rag = get_rag(); result = rag.query('How much can I deduct for commuting?', 'deductions'); print(f'\n✅ Query: Commuting deduction'); print(f'   Match: {result[\"sources\"][0][\"title\"] if result[\"sources\"] else \"No results\"}'); print(f'   Confidence: {result[\"confidence\"]}')"
 
 # Test tax calculations
 test-calc:
@@ -66,7 +83,7 @@ test: test-rag test-calc
 # Check knowledge base stats
 stats:
     @echo "📊 Knowledge Base Statistics:"
-    @uv run python -c "from src.lib.rag_engine import get_rag; rag = get_rag(); print(f'  Deductions: {rag.get_collection_count(\"deductions\")} chunks'); print(f'  Forms: {rag.get_collection_count(\"forms\")} chunks'); print(f'  Tax law: {rag.get_collection_count(\"tax_law\")} chunks')"
+    @uv run python -c "import sys; sys.path.append('src'); from lib.rag_engine import get_rag; rag = get_rag(); print(f'  Deductions: {rag.get_collection_count(\"deductions\")} documents'); print(f'  Forms: {rag.get_collection_count(\"forms\")} documents'); print(f'  Tax law: {rag.get_collection_count(\"tax_law\")} documents'); print(f'  Total: {rag.get_collection_count(\"deductions\") + rag.get_collection_count(\"forms\") + rag.get_collection_count(\"tax_law\")} documents')"
 
 # Clean up generated files
 clean:
@@ -114,16 +131,25 @@ help:
     @echo "📖 Quick Start Guide"
     @echo ""
     @echo "Initial setup:"
-    @echo "  just setup          # Install everything and populate knowledge base"
+    @echo "  just setup          # Install deps + start DB + scrape/embed sources"
+    @echo ""
+    @echo "Database:"
+    @echo "  just db-start       # Start PostgreSQL + pgvector"
+    @echo "  just db-stop        # Stop database"
     @echo ""
     @echo "Development:"
     @echo "  just run            # Start MCP server"
-    @echo "  just test           # Run tests"
-    @echo "  just ingest         # Refresh knowledge base"
+    @echo "  just test           # Run all tests (RAG + calculations)"
+    @echo "  just test-rag       # Test semantic search"
+    @echo "  just ingest         # Scrape + embed sources (~2 min)"
+    @echo "  just ingest-force   # Clear DB and re-ingest"
     @echo ""
     @echo "Utilities:"
     @echo "  just stats          # Show knowledge base stats"
     @echo "  just clean          # Clean generated files"
     @echo "  just info           # System information"
     @echo ""
-    @echo "Full documentation: GETTING_STARTED.md"
+    @echo "RAG Stack:"
+    @echo "  - Scrapes: EStG, BMF, ELSTER (official sources)"
+    @echo "  - Embeddings: Google Gemini (google-genai, 700-dim)"
+    @echo "  - Database: PostgreSQL + pgvector (HNSW index)"
